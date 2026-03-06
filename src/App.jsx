@@ -1220,21 +1220,6 @@ export default function App() {
                   Download preview image
                 </button>
               </div>
-
-              <div className="mt-3">
-                <p className="text-[11px] text-slate-600">OpenGraph preview</p>
-                <div className="mt-1 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                  {ogPngDataUrl ? (
-                    <img src={ogPngDataUrl} alt="OpenGraph preview" className="h-auto w-full" />
-                  ) : (
-                    <div className="p-4 text-xs text-slate-600">Generating image…</div>
-                  )}
-                </div>
-                <p className="mt-2 text-[11px] text-slate-600">
-                  Note: This OG image is generated client-side for sharing. For best crawler compatibility, generate a static og:image
-                  in your deployment.
-                </p>
-              </div>
             </div>
           </div>
         </section>
