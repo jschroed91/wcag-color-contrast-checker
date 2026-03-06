@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+Disallow: /*?
+Sitemap: https://wcag-color-contrast.joshds.com/sitemap.xml
