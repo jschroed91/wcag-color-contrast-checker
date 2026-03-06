@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useState } from "react";
+import React, { useMemo, useRef, useEffect, useState, useCallback } from "react";
 
 // WCAG 2.2 contrast requirements (contrast criteria are the same as WCAG 2.1):
 // - Normal text: AA >= 4.5, AAA >= 7
@@ -413,27 +413,33 @@ function CriteriaTable({ title, subtitle, ratio, criteria }) {
   );
 }
 
-function useElementSize(ref) {
+function useElementSize() {
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [node, setNode] = useState(null);
+
+  const ref = useCallback((node) => {
+    setNode(node);
+  }, []);
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
+    if (!node) return;
 
     const update = () => {
-      const r = el.getBoundingClientRect();
+      const r = node.getBoundingClientRect();
       setSize({ width: r.width, height: r.height });
     };
 
+    // Initial measurement
     update();
 
+    // Watch for size changes
     const ro = new ResizeObserver(() => update());
-    ro.observe(el);
+    ro.observe(node);
 
     return () => ro.disconnect();
-  }, [ref]);
+  }, [node]);
 
-  return size;
+  return [ref, size];
 }
 
 function safeEncode(s) {
@@ -848,8 +854,7 @@ export default function App() {
     void liveRef.current;
   }, [statusText]);
 
-  const previewRef = useRef(null);
-  const previewSize = useElementSize(previewRef);
+  const [previewRef, previewSize] = useElementSize();
 
   // Preview style
   const previewStyle = useMemo(() => {
