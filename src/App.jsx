@@ -21,6 +21,173 @@ function normalizeHex(input) {
   return null;
 }
 
+// Parse CSS linear-gradient() string into angle and stops
+function parseLinearGradientCss(css) {
+  if (!css) return null;
+  const s = String(css).trim();
+  
+  // Match linear-gradient(...) - extract the content inside parentheses
+  const match = s.match(/linear-gradient\s*\(\s*([\s\S]*)\s*\)/i);
+  if (!match) return null;
+  
+  const content = match[1].trim();
+  
+  // Parse angle - can be "180deg", "to bottom", etc.
+  let angle = 180; // default
+  let colorPart = content;
+  
+  // Check for degree angle at start
+  const degMatch = content.match(/^([-\d.]+)\s*deg\s*,\s*/i);
+  if (degMatch) {
+    angle = parseFloat(degMatch[1]);
+    colorPart = content.slice(degMatch[0].length);
+  } else {
+    // Check for direction keywords
+    const dirMatch = content.match(/^to\s+(top|bottom|left|right|top\s+left|top\s+right|bottom\s+left|bottom\s+right)\s*,\s*/i);
+    if (dirMatch) {
+      const dir = dirMatch[1].toLowerCase().replace(/\s+/g, ' ');
+      const dirMap = {
+        'top': 0,
+        'right': 90,
+        'bottom': 180,
+        'left': 270,
+        'top right': 45,
+        'right top': 45,
+        'bottom right': 135,
+        'right bottom': 135,
+        'bottom left': 225,
+        'left bottom': 225,
+        'top left': 315,
+        'left top': 315,
+      };
+      angle = dirMap[dir] ?? 180;
+      colorPart = content.slice(dirMatch[0].length);
+    }
+  }
+  
+  // Parse color stops - handle rgb(), rgba(), hsl(), hsla(), hex, and named colors
+  const stops = [];
+  let stopId = 0;
+  
+  // Split by commas, but respect parentheses (for rgb(), etc.)
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const char of colorPart) {
+    if (char === '(') depth++;
+    else if (char === ')') depth--;
+    
+    if (char === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  
+  for (const part of parts) {
+    if (!part) continue;
+    
+    // Try to extract color and optional position
+    // Patterns: "#fff 50%", "rgb(255,255,255) 50%", "red 50%", "#fff", "rgb(...)"
+    let color = null;
+    let pos = null;
+    
+    // Check for hex color
+    const hexMatch = part.match(/(#[0-9a-fA-F]{3,6})\s*([-\d.]+%)?/);
+    if (hexMatch) {
+      color = normalizeHex(hexMatch[1]);
+      if (hexMatch[2]) pos = parseFloat(hexMatch[2]);
+    }
+    
+    // Check for rgb/rgba
+    if (!color) {
+      const rgbMatch = part.match(/rgba?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*[\d.]+)?\s*\)\s*([-\d.]+%)?/i);
+      if (rgbMatch) {
+        const r = Math.round(parseFloat(rgbMatch[1]));
+        const g = Math.round(parseFloat(rgbMatch[2]));
+        const b = Math.round(parseFloat(rgbMatch[3]));
+        color = rgbToHex({ r, g, b });
+        if (rgbMatch[4]) pos = parseFloat(rgbMatch[4]);
+      }
+    }
+    
+    // Check for hsl/hsla - convert to rgb
+    if (!color) {
+      const hslMatch = part.match(/hsla?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*,\s*[\d.]+)?\s*\)\s*([-\d.]+%)?/i);
+      if (hslMatch) {
+        const h = parseFloat(hslMatch[1]) / 360;
+        const s = parseFloat(hslMatch[2]) / 100;
+        const l = parseFloat(hslMatch[3]) / 100;
+        const rgb = hslToRgb(h, s, l);
+        color = rgbToHex(rgb);
+        if (hslMatch[4]) pos = parseFloat(hslMatch[4]);
+      }
+    }
+    
+    if (color) {
+      stops.push({
+        id: `parsed-${stopId++}-${Math.random().toString(16).slice(2, 7)}`,
+        color,
+        pos: pos ?? null, // null means auto-distribute later
+      });
+    }
+  }
+  
+  // Auto-distribute positions for stops without explicit positions
+  if (stops.length >= 2) {
+    // If first stop has no position, set to 0
+    if (stops[0].pos === null) stops[0].pos = 0;
+    // If last stop has no position, set to 100
+    if (stops[stops.length - 1].pos === null) stops[stops.length - 1].pos = 100;
+    
+    // Fill in missing positions by linear interpolation
+    let lastKnownIdx = 0;
+    for (let i = 1; i < stops.length; i++) {
+      if (stops[i].pos !== null) {
+        // Interpolate between lastKnownIdx and i
+        const startPos = stops[lastKnownIdx].pos;
+        const endPos = stops[i].pos;
+        const count = i - lastKnownIdx;
+        for (let j = lastKnownIdx + 1; j < i; j++) {
+          stops[j].pos = startPos + ((endPos - startPos) * (j - lastKnownIdx)) / count;
+        }
+        lastKnownIdx = i;
+      }
+    }
+  } else if (stops.length === 1) {
+    stops[0].pos = stops[0].pos ?? 0;
+  }
+  
+  if (stops.length < 2) return null;
+  
+  return { angle, stops };
+}
+
+// HSL to RGB conversion helper
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+}
+
 function hexToRgb(hex) {
   const h = normalizeHex(hex);
   if (!h) return null;
@@ -454,13 +621,26 @@ function safeDecode(s) {
   }
 }
 
-function buildShareUrl({ mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop }) {
+function buildShareUrl({ mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop, previewWidth, previewHeight, previewText }) {
   const base = window.location.origin + window.location.pathname;
   const params = new URLSearchParams();
   params.set("mode", mode);
   params.set("text", (normalizeHex(textHex) || "#000000").slice(1));
   params.set("step", String(sampleStep));
   params.set("padTop", String(Math.max(0, Number(previewPadTop) || 0)));
+  
+  // Optional preview dimensions
+  if (previewWidth && Number.isFinite(Number(previewWidth))) {
+    params.set("previewW", String(Number(previewWidth)));
+  }
+  if (previewHeight && Number.isFinite(Number(previewHeight))) {
+    params.set("previewH", String(Number(previewHeight)));
+  }
+  
+  // Optional custom preview text
+  if (previewText && previewText !== "The quick brown fox jumps over the lazy dog.") {
+    params.set("previewText", safeEncode(previewText));
+  }
 
   if (mode === "solid") {
     params.set("bg", (normalizeHex(bgHex) || "#ffffff").slice(1));
@@ -488,6 +668,9 @@ function parseStateFromUrl() {
   const stops = p.get("stops");
   const step = p.get("step");
   const padTop = p.get("padTop");
+  const previewW = p.get("previewW");
+  const previewH = p.get("previewH");
+  const previewText = p.get("previewText");
 
   const state = {};
   if (mode) state.mode = mode;
@@ -496,6 +679,9 @@ function parseStateFromUrl() {
   if (angle && Number.isFinite(Number(angle))) state.angle = Number(angle);
   if (step && Number.isFinite(Number(step))) state.sampleStep = Number(step);
   if (padTop && Number.isFinite(Number(padTop))) state.previewPadTop = Math.max(0, Number(padTop));
+  if (previewW && Number.isFinite(Number(previewW))) state.previewWidth = Math.max(100, Number(previewW));
+  if (previewH && Number.isFinite(Number(previewH))) state.previewHeight = Math.max(50, Number(previewH));
+  if (previewText) state.previewText = safeDecode(previewText);
 
   if (stops) {
     const parts = safeDecode(stops)
@@ -802,19 +988,27 @@ export default function App() {
 
   const [angle, setAngle] = useState(180);
   const [stops, setStops] = useState([
-    { id: "s1", color: "#ffffff", pos: -17.75 },
-    { id: "s2", color: "#bac7e7", pos: 213.32 },
+    { id: "s1", color: "#ffffff", pos: 0 },
+    { id: "s2", color: "#bac7e7", pos: 100 },
   ]);
 
   const [sampleStep, setSampleStep] = useState(1);
 
-  // Preview padding to replicate where text sits inside the element.
+  // Preview configuration to replicate where text sits inside the element.
   const [previewPadTop, setPreviewPadTop] = useState(20);
+  const [previewWidth, setPreviewWidth] = useState(null); // null = auto (natural width)
+  const [previewHeight, setPreviewHeight] = useState(null); // null = auto (natural height)
+  const [previewText, setPreviewText] = useState("The quick brown fox jumps over the lazy dog.");
 
   // Share / OG image state
   const [shareUrl, setShareUrl] = useState("");
   const [ogPngDataUrl, setOgPngDataUrl] = useState(null);
   const [copied, setCopied] = useState(false);
+  
+  // Paste gradient CSS modal state
+  const [showPasteModal, setShowPasteModal] = useState(false);
+  const [pasteInput, setPasteInput] = useState("");
+  const [pasteError, setPasteError] = useState("");
 
   useEffect(() => {
     runSelfTestsOnce();
@@ -828,6 +1022,9 @@ export default function App() {
     if (s.stops) setStops(s.stops);
     if (typeof s.sampleStep === "number") setSampleStep(s.sampleStep);
     if (typeof s.previewPadTop === "number") setPreviewPadTop(s.previewPadTop);
+    if (typeof s.previewWidth === "number") setPreviewWidth(s.previewWidth);
+    if (typeof s.previewHeight === "number") setPreviewHeight(s.previewHeight);
+    if (s.previewText) setPreviewText(s.previewText);
   }, []);
 
   const textRgb = useMemo(() => hexToRgb(textHex), [textHex]);
@@ -859,7 +1056,7 @@ export default function App() {
   // Preview style
   const previewStyle = useMemo(() => {
     const bg = mode === "solid" ? normalizeHex(bgHex) || "#ffffff" : gradientCss;
-    return {
+    const style = {
       background: bg,
       color: normalizeHex(textHex) || "#000000",
       paddingTop: `${Math.max(0, Number(previewPadTop) || 0)}px`,
@@ -867,7 +1064,18 @@ export default function App() {
       paddingRight: "20px",
       paddingBottom: "20px",
     };
-  }, [mode, bgHex, gradientCss, textHex, previewPadTop]);
+    
+    // Apply custom dimensions if specified
+    if (previewWidth && Number.isFinite(Number(previewWidth))) {
+      style.width = `${Number(previewWidth)}px`;
+    }
+    if (previewHeight && Number.isFinite(Number(previewHeight))) {
+      style.height = `${Number(previewHeight)}px`;
+      style.overflow = "auto"; // Allow scrolling if content exceeds height
+    }
+    
+    return style;
+  }, [mode, bgHex, gradientCss, textHex, previewPadTop, previewWidth, previewHeight]);
 
   const setStop = (id, patch) => {
     setStops((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -884,6 +1092,19 @@ export default function App() {
 
   const removeStop = (id) => {
     setStops((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  const handlePasteGradient = () => {
+    setPasteError("");
+    const result = parseLinearGradientCss(pasteInput);
+    if (!result) {
+      setPasteError("Could not parse gradient. Please paste a valid linear-gradient() CSS value.");
+      return;
+    }
+    setAngle(result.angle);
+    setStops(result.stops);
+    setShowPasteModal(false);
+    setPasteInput("");
   };
 
   // Overall criteria (worst-case for gradients)
@@ -903,13 +1124,21 @@ export default function App() {
       return { pct: null, ratio: r, bgHex: solidBgRgb ? rgbToHex(solidBgRgb) : null };
     }
 
+    // Use custom dimensions if specified, otherwise use measured dimensions
+    const effectiveWidth = previewWidth && Number.isFinite(Number(previewWidth)) 
+      ? Number(previewWidth) 
+      : previewSize.width;
+    const effectiveHeight = previewHeight && Number.isFinite(Number(previewHeight))
+      ? Number(previewHeight)
+      : previewSize.height;
+
     // Sample at a point representing where text begins.
     // We use the horizontal center, and the y coordinate equal to the top padding.
     const pct = pointToGradientPercent({
-      x: previewSize.width / 2,
+      x: effectiveWidth / 2,
       y: Math.max(0, Number(previewPadTop) || 0),
-      width: previewSize.width,
-      height: previewSize.height,
+      width: effectiveWidth,
+      height: effectiveHeight,
       angleDeg: angle,
     });
 
@@ -920,7 +1149,7 @@ export default function App() {
       ratio: r,
       bgHex: bg ? rgbToHex(bg) : null,
     };
-  }, [analysis, mode, solidBgRgb, stops, previewSize.width, previewSize.height, previewPadTop, angle, textRgb]);
+  }, [analysis, mode, solidBgRgb, stops, previewSize.width, previewSize.height, previewPadTop, previewWidth, previewHeight, angle, textRgb]);
 
   const positionCriteria = useMemo(() => computeCriteriaForRatio(positionInfo.ratio), [positionInfo.ratio]);
 
@@ -957,11 +1186,11 @@ export default function App() {
 
   // Share URL (auto-generated from current state)
   useEffect(() => {
-    const url = buildShareUrl({ mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop });
+    const url = buildShareUrl({ mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop, previewWidth, previewHeight, previewText });
     setShareUrl(url);
     // keep canonical stable: without transient hash fragments
     window.history.replaceState({}, "", url);
-  }, [mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop]);
+  }, [mode, textHex, bgHex, angle, stops, sampleStep, previewPadTop, previewWidth, previewHeight, previewText]);
 
   // OG image generation (debounced-ish)
   useEffect(() => {
@@ -1064,7 +1293,7 @@ export default function App() {
 
       <div className="mt-5">
         <h3 className="text-sm font-semibold">Preview</h3>
-        <p className="mt-1 text-xs text-slate-600">Adjust padding-top to match where your text sits relative to the gradient.</p>
+        <p className="mt-1 text-xs text-slate-600">Configure preview dimensions and text to match your actual layout.</p>
 
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
           <div className="flex flex-wrap items-end gap-4">
@@ -1111,10 +1340,10 @@ export default function App() {
         >
           <div className="max-w-xl">
             <p className="text-base font-normal">
-              Normal text sample — The quick brown fox jumps over the lazy dog. (WCAG normal text uses 4.5:1 for AA.)
+              {previewText}
             </p>
             <p className="mt-3 text-lg font-semibold">
-              Large/bold sample — The quick brown fox jumps over the lazy dog. (Large text AA is 3:1.)
+              {previewText} (Large/bold)
             </p>
             <div className="mt-4 inline-flex items-center gap-2 rounded-xl border border-slate-950/10 bg-white/70 px-3 py-2 backdrop-blur">
               <span className="text-sm font-semibold">UI sample:</span>
@@ -1306,14 +1535,72 @@ export default function App() {
                       <div className="min-w-0">
                         <FieldLabel htmlFor="stops">Gradient stops</FieldLabel>
                       </div>
-                      <button
-                        type="button"
-                        onClick={addStop}
-                        className="w-full sm:w-auto rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                      >
-                        Add stop
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPasteInput("");
+                            setPasteError("");
+                            setShowPasteModal(true);
+                          }}
+                          className="w-full sm:w-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        >
+                          Paste gradient CSS
+                        </button>
+                        <button
+                          type="button"
+                          onClick={addStop}
+                          className="w-full sm:w-auto rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        >
+                          Add stop
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Paste gradient CSS modal */}
+                    {showPasteModal && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowPasteModal(false)}>
+                        <div 
+                          className="mx-4 w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <h3 className="text-lg font-semibold text-slate-900">Paste gradient CSS</h3>
+                          <p className="mt-1 text-sm text-slate-600">
+                            Paste a CSS linear-gradient() value and we'll extract the angle and color stops.
+                          </p>
+                          <textarea
+                            className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                            rows={4}
+                            placeholder="linear-gradient(180deg, #ffffff 0%, #bac7e7 100%)"
+                            value={pasteInput}
+                            onChange={(e) => setPasteInput(e.target.value)}
+                            autoFocus
+                          />
+                          {pasteError && (
+                            <p className="mt-2 text-sm text-rose-600">{pasteError}</p>
+                          )}
+                          <p className="mt-2 text-xs text-slate-500">
+                            Supports hex, rgb(), rgba(), hsl(), hsla() colors. Direction keywords like "to bottom" are also supported.
+                          </p>
+                          <div className="mt-4 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowPasteModal(false)}
+                              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handlePasteGradient}
+                              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="space-y-3" id="stops">
                       {sortStops(stops).map((s, idx) => {
