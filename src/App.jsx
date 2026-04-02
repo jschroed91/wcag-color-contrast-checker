@@ -1010,6 +1010,12 @@ export default function App() {
   const [pasteInput, setPasteInput] = useState("");
   const [pasteError, setPasteError] = useState("");
 
+  // Image color picker state
+  const [pickerImage, setPickerImage] = useState(null); // data URL of uploaded image
+  const [pickerMode, setPickerMode] = useState(false); // whether color picking is active
+  const [pickerClickCount, setPickerClickCount] = useState(0); // tracks which color we're picking
+  const imageRef = useRef(null);
+
   useEffect(() => {
     runSelfTestsOnce();
 
@@ -1105,6 +1111,92 @@ export default function App() {
     setStops(result.stops);
     setShowPasteModal(false);
     setPasteInput("");
+  };
+
+  // Image upload handler
+  const handleImageUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setPickerImage(event.target.result);
+      setPickerMode(false);
+      setPickerClickCount(0);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Start color picking mode
+  const startColorPicking = () => {
+    setPickerMode(true);
+    setPickerClickCount(0);
+    // For gradient mode, reset stops to empty so we build fresh
+    if (mode === "gradient") {
+      setStops([]);
+    }
+  };
+
+  // Get color from image at click position
+  const getColorFromImage = useCallback((e) => {
+    if (!pickerMode || !imageRef.current) return;
+    
+    const img = imageRef.current;
+    const rect = img.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Create canvas to read pixel data
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    
+    // Scale click position to natural image dimensions
+    const scaleX = img.naturalWidth / rect.width;
+    const scaleY = img.naturalHeight / rect.height;
+    const pixelX = Math.floor(x * scaleX);
+    const pixelY = Math.floor(y * scaleY);
+    
+    const pixel = ctx.getImageData(pixelX, pixelY, 1, 1).data;
+    const hex = rgbToHex({ r: pixel[0], g: pixel[1], b: pixel[2] });
+    
+    if (mode === "solid") {
+      // Solid mode: first click = text color, second click = background color
+      if (pickerClickCount === 0) {
+        setTextHex(hex);
+        setPickerClickCount(1);
+      } else {
+        setBgHex(hex);
+        setPickerMode(false);
+        setPickerClickCount(0);
+      }
+    } else {
+      // Gradient mode: first click = text color, subsequent clicks = gradient stops
+      if (pickerClickCount === 0) {
+        setTextHex(hex);
+        setPickerClickCount(1);
+      } else {
+        // Add as gradient stop
+        const stopId = `pick-${pickerClickCount}-${Math.random().toString(16).slice(2, 7)}`;
+        setStops((prev) => [...prev, { id: stopId, color: hex, pos: prev.length === 0 ? 0 : 100 }]);
+        setPickerClickCount((c) => c + 1);
+      }
+    }
+  }, [pickerMode, mode, pickerClickCount]);
+
+  // Finish gradient picking (need at least 2 stops)
+  const finishGradientPicking = () => {
+    setPickerMode(false);
+    setPickerClickCount(0);
+  };
+
+  // Cancel/clear image picker
+  const clearImagePicker = () => {
+    setPickerImage(null);
+    setPickerMode(false);
+    setPickerClickCount(0);
   };
 
   // Overall criteria (worst-case for gradients)
@@ -1462,6 +1554,93 @@ export default function App() {
         <main className="mt-8 grid gap-6 lg:grid-cols-2">
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-base font-semibold">Inputs</h2>
+
+            {/* Image Color Picker */}
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">Pick colors from image</p>
+                  <p className="text-xs text-slate-600">Upload a screenshot or asset to extract colors</p>
+                </div>
+                <label className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 focus-within:ring-2 focus-within:ring-sky-500">
+                  Upload image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={handleImageUpload}
+                  />
+                </label>
+              </div>
+
+              {pickerImage && (
+                <div className="mt-3 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!pickerMode ? (
+                      <button
+                        type="button"
+                        onClick={startColorPicking}
+                        className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      >
+                        Select colors
+                      </button>
+                    ) : (
+                      <>
+                        {mode === "gradient" && stops.length >= 2 && (
+                          <button
+                            type="button"
+                            onClick={finishGradientPicking}
+                            className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                          >
+                            Done ({stops.length} stops)
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setPickerMode(false); setPickerClickCount(0); }}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={clearImagePicker}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    >
+                      Remove image
+                    </button>
+                  </div>
+
+                  {pickerMode && (
+                    <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900">
+                      {mode === "solid" ? (
+                        pickerClickCount === 0 
+                          ? "Click on the image to select text color" 
+                          : "Click to select background color"
+                      ) : (
+                        pickerClickCount === 0 
+                          ? "Click on the image to select text color" 
+                          : `Click to add gradient stop #${stops.length + 1} (need at least 2)`
+                      )}
+                    </div>
+                  )}
+
+                  <div 
+                    className={`relative overflow-hidden rounded-lg border-2 ${pickerMode ? 'border-sky-500 cursor-crosshair' : 'border-slate-200'}`}
+                    onClick={getColorFromImage}
+                  >
+                    <img
+                      ref={imageRef}
+                      src={pickerImage}
+                      alt="Uploaded image for color picking"
+                      className="max-h-64 w-full object-contain"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="mt-4 grid gap-4">
               <ColorInput
